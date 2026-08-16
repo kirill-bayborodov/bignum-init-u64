@@ -356,7 +356,7 @@ bench_st: $(FAMILY_SYMLINK) $(BENCH_BIN_ST)
 	@sudo sysctl -w kernel.perf_event_max_sample_rate=10000 > /dev/null
 	@rm -f $(BENCH_RUNTIME_ST)
 	@taskset 0x1 $(PERF) record $(RECORD_OPT) -o $(PERF_DATA_ST) -- $(BENCH_BIN_ST) --data-mode $(DATA_MODE) > $(BENCH_RUNTIME_ST) 2>&1
-	@test "$$(grep -c '^benchmark=bignum_init_u64_st ' $(BENCH_RUNTIME_ST))" -eq 1 || { echo "ERROR: ST benchmark did not complete; see $(BENCH_RUNTIME_ST)"; exit 1; }
+	@test "$$(grep -c '^benchmark=$(LIB_NAME)_st ' $(BENCH_RUNTIME_ST))" -eq 1 || { echo "ERROR: ST benchmark did not complete; see $(BENCH_RUNTIME_ST)"; exit 1; }
 	@grep -q "data_mode=$(DATA_MODE)" $(BENCH_RUNTIME_ST) || { echo "ERROR: ST data mode mismatch; see $(BENCH_RUNTIME_ST)"; exit 1; }
 	@grep -q 'elapsed_seconds=' $(BENCH_RUNTIME_ST) || { echo "ERROR: ST runtime output is incomplete; see $(BENCH_RUNTIME_ST)"; exit 1; }
 	@$(PERF) report -i $(PERF_DATA_ST) $(REPORT_OPT) --dsos $(BENCH_BIN) --stdio > $(REPORT_FILE_ST)
@@ -369,7 +369,7 @@ bench_mt: $(FAMILY_SYMLINK) $(BENCH_BIN_MT)
 	@sudo sysctl -w kernel.perf_event_max_sample_rate=20000 > /dev/null	
 	@rm -f $(BENCH_RUNTIME_MT)
 	@taskset --cpu-list $(MT_CPU_LIST) $(PERF) record $(RECORD_OPT) -o $(PERF_DATA_MT) -- $(BENCH_BIN_MT) --threads $(MT_THREADS) --total-iterations $(MT_TOTAL_ITERATIONS) --data-mode $(DATA_MODE) > $(BENCH_RUNTIME_MT) 2>&1
-	@test "$$(grep -c '^benchmark=bignum_init_u64_mt ' $(BENCH_RUNTIME_MT))" -eq 1 || { echo "ERROR: MT benchmark did not complete; see $(BENCH_RUNTIME_MT)"; exit 1; }
+	@test "$$(grep -c '^benchmark=$(LIB_NAME)_mt ' $(BENCH_RUNTIME_MT))" -eq 1 || { echo "ERROR: MT benchmark did not complete; see $(BENCH_RUNTIME_MT)"; exit 1; }
 	@grep -q "data_mode=$(DATA_MODE)" $(BENCH_RUNTIME_MT) || { echo "ERROR: MT data mode mismatch; see $(BENCH_RUNTIME_MT)"; exit 1; }
 	@grep -q 'elapsed_seconds=' $(BENCH_RUNTIME_MT) || { echo "ERROR: MT runtime output is incomplete; see $(BENCH_RUNTIME_MT)"; exit 1; }
 	@$(PERF) report -i $(PERF_DATA_MT) $(REPORT_OPT) --dsos $(BENCH_BIN)_mt --stdio > $(REPORT_FILE_MT)
@@ -395,7 +395,7 @@ bench_stat_st: $(FAMILY_SYMLINK) $(BENCH_BIN_ST)
 	@$(MKDIR) $(REPORTS_DIR)
 	@printf 'CONFIG=$(CONFIG) DATA_MODE=$(DATA_MODE) PERF_RUNS=$(PERF_RUNS) PERF_EVENTS=$(PERF_EVENTS) CPU_LIST=0\n' > $(STAT_RUNTIME_ST)
 	@taskset 0x1 $(PERF) stat -r $(PERF_RUNS) -x, -e $(PERF_EVENTS) -o $(STAT_FILE_ST) -- $(BENCH_BIN_ST) --data-mode $(DATA_MODE) >> $(STAT_RUNTIME_ST) 2>&1
-	@test "$$(grep -c '^benchmark=bignum_init_u64_st ' $(STAT_RUNTIME_ST))" -eq $(PERF_RUNS) || { echo "ERROR: ST perf stat expected $(PERF_RUNS) completed runs; see $(STAT_RUNTIME_ST)"; exit 1; }
+	@test "$$(grep -c '^benchmark=$(LIB_NAME)_st ' $(STAT_RUNTIME_ST))" -eq $(PERF_RUNS) || { echo "ERROR: ST perf stat expected $(PERF_RUNS) completed runs; see $(STAT_RUNTIME_ST)"; exit 1; }
 	@grep -q "data_mode=$(DATA_MODE)" $(STAT_RUNTIME_ST) || { echo "ERROR: ST perf stat data mode mismatch; see $(STAT_RUNTIME_ST)"; exit 1; }
 	@grep -q 'elapsed_seconds=' $(STAT_RUNTIME_ST) || { echo "ERROR: ST perf stat runtime output is incomplete; see $(STAT_RUNTIME_ST)"; exit 1; }
 
@@ -404,7 +404,7 @@ bench_stat_mt: $(FAMILY_SYMLINK) $(BENCH_BIN_MT)
 	@$(MKDIR) $(REPORTS_DIR)
 	@printf 'CONFIG=$(CONFIG) DATA_MODE=$(DATA_MODE) PERF_RUNS=$(PERF_RUNS) PERF_EVENTS=$(PERF_EVENTS) MT_THREADS=$(MT_THREADS) MT_CPU_LIST=$(MT_CPU_LIST) MT_TOTAL_ITERATIONS=$(MT_TOTAL_ITERATIONS)\n' > $(STAT_RUNTIME_MT)
 	@taskset --cpu-list $(MT_CPU_LIST) $(PERF) stat -r $(PERF_RUNS) -x, -e $(PERF_EVENTS) -o $(STAT_FILE_MT) -- $(BENCH_BIN_MT) --threads $(MT_THREADS) --total-iterations $(MT_TOTAL_ITERATIONS) --data-mode $(DATA_MODE) >> $(STAT_RUNTIME_MT) 2>&1
-	@test "$$(grep -c '^benchmark=bignum_init_u64_mt ' $(STAT_RUNTIME_MT))" -eq $(PERF_RUNS) || { echo "ERROR: MT perf stat expected $(PERF_RUNS) completed runs; see $(STAT_RUNTIME_MT)"; exit 1; }
+	@test "$$(grep -c '^benchmark=$(LIB_NAME)_mt ' $(STAT_RUNTIME_MT))" -eq $(PERF_RUNS) || { echo "ERROR: MT perf stat expected $(PERF_RUNS) completed runs; see $(STAT_RUNTIME_MT)"; exit 1; }
 	@grep -q "data_mode=$(DATA_MODE)" $(STAT_RUNTIME_MT) || { echo "ERROR: MT perf stat data mode mismatch; see $(STAT_RUNTIME_MT)"; exit 1; }
 	@grep -q 'elapsed_seconds=' $(STAT_RUNTIME_MT) || { echo "ERROR: MT perf stat runtime output is incomplete; see $(STAT_RUNTIME_MT)"; exit 1; }
 
