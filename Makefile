@@ -223,7 +223,7 @@ endif
 SAN_LOG_PREFIX := $(BIN_DIR)/sanitize_
 
 ifeq ($(strip $(CONFIG)), release)
-    CFLAGS = $(CFLAGS_BASE) -O2 -march=native $(SAN_CFLAGS)
+    CFLAGS = $(CFLAGS_BASE) -O2 -march=x86-64 $(SAN_CFLAGS)
     ASFLAGS = $(ASFLAGS_BASE)
 else
     CFLAGS = $(CFLAGS_BASE) -g $(SAN_CFLAGS)
@@ -232,6 +232,10 @@ endif
 
 CFLAGS += -Wl,-z,noexecstack
 LDFLAGS += $(SAN_LDFLAGS)
+
+# Helgrind cannot reliably decode every instruction emitted by -march=native.
+# Build Helgrind test binaries with a conservative baseline ISA instead.
+HELGRIND_CFLAGS := $(CFLAGS_BASE) -O1 -g -fno-omit-frame-pointer -march=x86-64 -Wl,-z,noexecstack
 
 # --- Perf-specific settings ---
 ifeq ($(SRC_EXT),asm)
@@ -318,6 +322,7 @@ test_sanitize: $(FAMILY_SYMLINK) $(TEST_BINS)
 # Использование:
 #   make test_helgrind
 # Требования: valgrind (apt install valgrind).
+test_helgrind: CFLAGS := $(HELGRIND_CFLAGS)
 test_helgrind: $(FAMILY_SYMLINK) $(TEST_BINS)
 	@echo "=== Running MT tests under Helgrind (CONFIG=$(CONFIG)) ==="
 	@total=0; fail=0; \
