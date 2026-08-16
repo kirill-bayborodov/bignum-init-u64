@@ -5,6 +5,8 @@ CONFIG ?= debug
 # values: auto | yes | no
 USE_ASM ?= auto
 REPORT_NAME ?= current
+# Benchmark input mode: all_zero | all_nonzero | mixed
+DATA_MODE ?= all_nonzero
 # values: no | address | undefined
 SAN ?= no
 # yes — прогнать *_mt тесты под valgrind --tool=helgrind
@@ -20,6 +22,9 @@ LIB_NAME := $(subst -,_,$(notdir $(patsubst %/,%,$(dir $(abspath $(lastword $(MA
 UPPER_LIB_NAME := $(subst z,Z,$(subst y,Y,$(subst x,X,$(subst w,W,$(subst v,V,$(subst u,U,$(subst t,T,$(subst s,S,$(subst r,R,$(subst q,Q,$(subst p,P,$(subst o,O,$(subst n,N,$(subst m,M,$(subst l,L,$(subst k,K,$(subst j,J,$(subst i,I,$(subst h,H,$(subst g,G,$(subst f,F,$(subst e,E,$(subst d,D,$(subst c,C,$(subst b,B,$(subst a,A,$(LIB_NAME)))))))))))))))))))))))))))
 NP := $(strip $(shell nproc))
 CPU_LIST := $(shell seq 0 $$(( $(NP) - 1 )) | paste -sd "," -)
+MT_THREADS ?= 2
+MT_CPU_LIST ?= 0-1
+MT_TOTAL_ITERATIONS ?= 3200000000
 
 # --- Tools ---
 CC = gcc
@@ -172,6 +177,10 @@ BENCH_BIN = bench_$(LIB_NAME)
 BENCH_BIN_ST = $(BIN_DIR)/$(BENCH_BIN)
 BENCH_BIN_MT = $(BIN_DIR)/$(BENCH_BIN)_mt
 BENCH_BINS = $(BENCH_BIN_ST) $(BENCH_BIN_MT)
+BENCH_SRC_ST = $(BENCH_DIR)/bench_$(LIB_NAME).c
+BENCH_SRC_MT = $(BENCH_DIR)/bench_$(LIB_NAME)_mt.c
+BENCH_RUNTIME_ST = $(REPORTS_DIR)/$(REPORT_NAME)_st_bench_runtime.txt
+BENCH_RUNTIME_MT = $(REPORTS_DIR)/$(REPORT_NAME)_mt_bench_runtime.txt
 
 STATIC_LIB = $(DIST_DIR)/lib$(LIB_NAME).a
 SINGLE_HEADER = $(DIST_DIR)/$(LIB_NAME).h
@@ -234,14 +243,22 @@ space := $(empty) $(empty)
 ASM_LABELS := $(subst $(space),|,$(ASM_LABELS))
 
 PERF_SYMBOL_FILTER = '$(LIB_NAME)\.($(ASM_LABELS))'
-PERF_DATA_ST = /tmp/$(LIB_NAME)_$(REPORT_NAME)_st.perf
-PERF_DATA_MT = /tmp/$(LIB_NAME)_$(REPORT_NAME)_mt.perf
+# Raw perf.data сохраняются рядом с текстовыми отчётами для повторного анализа.
+PERF_DATA_ST = $(REPORTS_DIR)/$(REPORT_NAME)_st.perf.data
+PERF_DATA_MT = $(REPORTS_DIR)/$(REPORT_NAME)_mt.perf.data
 REPORT_FILE_ST = $(REPORTS_DIR)/$(REPORT_NAME)_st.txt
 REPORT_FILE_MT = $(REPORTS_DIR)/$(REPORT_NAME)_mt.txt
+STAT_FILE_ST = $(REPORTS_DIR)/$(REPORT_NAME)_st_stat.csv
+STAT_FILE_MT = $(REPORTS_DIR)/$(REPORT_NAME)_mt_stat.csv
+STAT_RUNTIME_ST = $(REPORTS_DIR)/$(REPORT_NAME)_st_runtime.txt
+STAT_RUNTIME_MT = $(REPORTS_DIR)/$(REPORT_NAME)_mt_runtime.txt
+PERF_RUNS ?= 5
+PERF_EVENTS ?= cycles,instructions,cache-references,cache-misses,branches,branch-misses
+KEEP_PERF ?= 1
 RECORD_OPT = -F 1000 -m 16M -e cycles,cache-misses,branch-misses -g --call-graph fp
 REPORT_OPT = --percent-limit 1.0 --sort comm,dso,symbol --symbol-filter=$(PERF_SYMBOL_FILTER)
 
-.PHONY: all build lint test test_sanitize test_helgrind bench install generate-header dist clean help show-calc unlink-symlink
+.PHONY: all build lint test test_sanitize test_helgrind bench bench_full bench_stat bench_stat_st bench_stat_mt install generate-header dist clean help show-calc unlink-symlink
 
 all: build 
 build: $(OBJ) $(OBJECTS) 
@@ -337,20 +354,59 @@ bench_st: $(FAMILY_SYMLINK) $(BENCH_BIN_ST)
 	@echo "=== ST benchmark for report: $(REPORT_NAME) (CONFIG=$(CONFIG)) ==="
 	@$(MKDIR) $(REPORTS_DIR)
 	@sudo sysctl -w kernel.perf_event_max_sample_rate=10000 > /dev/null
-	@taskset 0x1 $(PERF) record $(RECORD_OPT) -o $(PERF_DATA_ST) -- $(BENCH_BIN_ST)
+	@rm -f $(BENCH_RUNTIME_ST)
+	@taskset 0x1 $(PERF) record $(RECORD_OPT) -o $(PERF_DATA_ST) -- $(BENCH_BIN_ST) --data-mode $(DATA_MODE) > $(BENCH_RUNTIME_ST) 2>&1
+	@test "$$(grep -c '^benchmark=bignum_init_u64_st ' $(BENCH_RUNTIME_ST))" -eq 1 || { echo "ERROR: ST benchmark did not complete; see $(BENCH_RUNTIME_ST)"; exit 1; }
+	@grep -q "data_mode=$(DATA_MODE)" $(BENCH_RUNTIME_ST) || { echo "ERROR: ST data mode mismatch; see $(BENCH_RUNTIME_ST)"; exit 1; }
+	@grep -q 'elapsed_seconds=' $(BENCH_RUNTIME_ST) || { echo "ERROR: ST runtime output is incomplete; see $(BENCH_RUNTIME_ST)"; exit 1; }
 	@$(PERF) report -i $(PERF_DATA_ST) $(REPORT_OPT) --dsos $(BENCH_BIN) --stdio > $(REPORT_FILE_ST)
-	@$(RM) $(PERF_DATA_ST)
+	@if [ "$(KEEP_PERF)" = "0" ]; then $(RM) $(PERF_DATA_ST); else echo "ST raw perf: $(PERF_DATA_ST)"; fi
 	@echo "ST report: $(REPORT_FILE_ST)"
 
 bench_mt: $(FAMILY_SYMLINK) $(BENCH_BIN_MT)
 	@echo "=== MT benchmark for report: $(REPORT_NAME) (CONFIG=$(CONFIG)) ==="
 	@$(MKDIR) $(REPORTS_DIR)
 	@sudo sysctl -w kernel.perf_event_max_sample_rate=20000 > /dev/null	
-	@taskset --cpu-list $(CPU_LIST) $(PERF) record $(RECORD_OPT) -o $(PERF_DATA_MT) -- $(BENCH_BIN_MT)
+	@rm -f $(BENCH_RUNTIME_MT)
+	@taskset --cpu-list $(MT_CPU_LIST) $(PERF) record $(RECORD_OPT) -o $(PERF_DATA_MT) -- $(BENCH_BIN_MT) --threads $(MT_THREADS) --total-iterations $(MT_TOTAL_ITERATIONS) --data-mode $(DATA_MODE) > $(BENCH_RUNTIME_MT) 2>&1
+	@test "$$(grep -c '^benchmark=bignum_init_u64_mt ' $(BENCH_RUNTIME_MT))" -eq 1 || { echo "ERROR: MT benchmark did not complete; see $(BENCH_RUNTIME_MT)"; exit 1; }
+	@grep -q "data_mode=$(DATA_MODE)" $(BENCH_RUNTIME_MT) || { echo "ERROR: MT data mode mismatch; see $(BENCH_RUNTIME_MT)"; exit 1; }
+	@grep -q 'elapsed_seconds=' $(BENCH_RUNTIME_MT) || { echo "ERROR: MT runtime output is incomplete; see $(BENCH_RUNTIME_MT)"; exit 1; }
 	@$(PERF) report -i $(PERF_DATA_MT) $(REPORT_OPT) --dsos $(BENCH_BIN)_mt --stdio > $(REPORT_FILE_MT)
-	@$(RM) $(PERF_DATA_MT)
+	@if [ "$(KEEP_PERF)" = "0" ]; then $(RM) $(PERF_DATA_MT); else echo "MT raw perf: $(PERF_DATA_MT)"; fi
 	@echo "MT report: $(REPORT_FILE_MT)"
 
+# Повторяем perf stat для сравнительных исследований.
+# Пример: make bench_stat CONFIG=release REPORT_NAME=baseline PERF_RUNS=7 DATA_MODE=all_nonzero
+bench_full: $(FAMILY_SYMLINK) $(REPORTS_DIR)
+	@set -e; for mode in all_zero all_nonzero mixed; do \
+		report_name="$(REPORT_NAME)_$${mode}"; \
+		echo "=== Full benchmark mode: $${mode}, report=$${report_name} ==="; \
+		$(MAKE) --no-print-directory bench CONFIG=$(CONFIG) REPORT_NAME=$${report_name} DATA_MODE=$${mode} KEEP_PERF=$(KEEP_PERF); \
+		$(MAKE) --no-print-directory bench_stat CONFIG=$(CONFIG) REPORT_NAME=$${report_name} DATA_MODE=$${mode} PERF_RUNS=$(PERF_RUNS); \
+	done
+
+bench_stat: bench_stat_st bench_stat_mt
+	@echo "ST stat: $(STAT_FILE_ST)"
+	@echo "MT stat: $(STAT_FILE_MT)"
+
+bench_stat_st: $(FAMILY_SYMLINK) $(BENCH_BIN_ST)
+	@echo "=== ST perf stat: $(REPORT_NAME) (CONFIG=$(CONFIG), RUNS=$(PERF_RUNS)) ==="
+	@$(MKDIR) $(REPORTS_DIR)
+	@printf 'CONFIG=$(CONFIG) DATA_MODE=$(DATA_MODE) PERF_RUNS=$(PERF_RUNS) PERF_EVENTS=$(PERF_EVENTS) CPU_LIST=0\n' > $(STAT_RUNTIME_ST)
+	@taskset 0x1 $(PERF) stat -r $(PERF_RUNS) -x, -e $(PERF_EVENTS) -o $(STAT_FILE_ST) -- $(BENCH_BIN_ST) --data-mode $(DATA_MODE) >> $(STAT_RUNTIME_ST) 2>&1
+	@test "$$(grep -c '^benchmark=bignum_init_u64_st ' $(STAT_RUNTIME_ST))" -eq $(PERF_RUNS) || { echo "ERROR: ST perf stat expected $(PERF_RUNS) completed runs; see $(STAT_RUNTIME_ST)"; exit 1; }
+	@grep -q "data_mode=$(DATA_MODE)" $(STAT_RUNTIME_ST) || { echo "ERROR: ST perf stat data mode mismatch; see $(STAT_RUNTIME_ST)"; exit 1; }
+	@grep -q 'elapsed_seconds=' $(STAT_RUNTIME_ST) || { echo "ERROR: ST perf stat runtime output is incomplete; see $(STAT_RUNTIME_ST)"; exit 1; }
+
+bench_stat_mt: $(FAMILY_SYMLINK) $(BENCH_BIN_MT)
+	@echo "=== MT perf stat: $(REPORT_NAME) (CONFIG=$(CONFIG), RUNS=$(PERF_RUNS)) ==="
+	@$(MKDIR) $(REPORTS_DIR)
+	@printf 'CONFIG=$(CONFIG) DATA_MODE=$(DATA_MODE) PERF_RUNS=$(PERF_RUNS) PERF_EVENTS=$(PERF_EVENTS) MT_THREADS=$(MT_THREADS) MT_CPU_LIST=$(MT_CPU_LIST) MT_TOTAL_ITERATIONS=$(MT_TOTAL_ITERATIONS)\n' > $(STAT_RUNTIME_MT)
+	@taskset --cpu-list $(MT_CPU_LIST) $(PERF) stat -r $(PERF_RUNS) -x, -e $(PERF_EVENTS) -o $(STAT_FILE_MT) -- $(BENCH_BIN_MT) --threads $(MT_THREADS) --total-iterations $(MT_TOTAL_ITERATIONS) --data-mode $(DATA_MODE) >> $(STAT_RUNTIME_MT) 2>&1
+	@test "$$(grep -c '^benchmark=bignum_init_u64_mt ' $(STAT_RUNTIME_MT))" -eq $(PERF_RUNS) || { echo "ERROR: MT perf stat expected $(PERF_RUNS) completed runs; see $(STAT_RUNTIME_MT)"; exit 1; }
+	@grep -q "data_mode=$(DATA_MODE)" $(STAT_RUNTIME_MT) || { echo "ERROR: MT perf stat data mode mismatch; see $(STAT_RUNTIME_MT)"; exit 1; }
+	@grep -q 'elapsed_seconds=' $(STAT_RUNTIME_MT) || { echo "ERROR: MT perf stat runtime output is incomplete; see $(STAT_RUNTIME_MT)"; exit 1; }
 
 install: clean $(FAMILY_SYMLINK) $(OBJ) $(OBJECTS) | $(DIST_INCLUDE_DIR) $(DIST_LIB_DIR)
 	@printf "%s" "Installing product to $(DIST_DIR)/ (CONFIG=$(CONFIG))..."
@@ -505,6 +561,8 @@ $(BIN_DIR)/%: $(TESTS_DIR)/%.c $(OBJ) $(OBJECTS) | $(BIN_DIR)
 	@$(MKDIR) $(BIN_DIR)
 	@$(CC) $(CFLAGS) $< $(OBJECTS) $(OBJ) -o $@ $(LDFLAGS) \
 	  $(if $(filter %_mt,$*),-pthread)
+$(BENCH_BIN_ST): $(BENCH_SRC_ST) $(OBJ) $(OBJECTS) | $(BIN_DIR)
+$(BENCH_BIN_MT): $(BENCH_SRC_MT) $(OBJ) $(OBJECTS) | $(BIN_DIR)
 $(BIN_DIR)/bench_%: $(BENCH_DIR)/bench_%.c $(OBJ) $(OBJECTS) | $(BIN_DIR)
 	@$(MAKE) -s build CONFIG=debug
 	@$(CC) $(CFLAGS) -g $< $(OBJECTS) $(OBJ) -o $@ $(LDFLAGS) $(if $(filter %_mt,$*),-pthread)
@@ -555,6 +613,17 @@ help:
 	@echo "Main Targets:"
 	@echo "  all/build      Builds the main object file."
 	@echo "  lint           Static analysis on C sources."
+	@echo "  bench          perf record/report benchmark; raw perf.data kept by default."
+	@echo "  bench_full     Run bench and bench_stat for all_zero, all_nonzero and mixed."
+	@echo "  bench_stat     Repeated perf stat runs for ST and MT."
+	@echo "  bench_stat_st  Repeated ST perf stat runs."
+	@echo "  bench_stat_mt  Repeated MT perf stat runs."
+	@echo ""
+	@echo "Benchmark variables: DATA_MODE=all_nonzero|all_zero|mixed PERF_RUNS=5 PERF_EVENTS=<events> KEEP_PERF=1"
+	@echo "  MT defaults: MT_THREADS=2 MT_CPU_LIST=0-1 MT_TOTAL_ITERATIONS=3200000000"
+	@echo "  MT-1: make bench_mt MT_THREADS=1 MT_CPU_LIST=0 MT_TOTAL_ITERATIONS=3200000000"
+	@echo "  MT-2: make bench_mt MT_THREADS=2 MT_CPU_LIST=0-1 MT_TOTAL_ITERATIONS=3200000000"
+	@echo "  MT_TOTAL_ITERATIONS is divided evenly across MT_THREADS."
 	@echo "  test           Builds and runs all unit tests."
 	@echo "  test_sanitize  Runs tests under sanitizer: make test_sanitize SAN={address|undefined}"
 	@echo "  test_helgrind  Runs *_mt tests under valgrind --tool=helgrind for race detection."
@@ -573,8 +642,27 @@ help:
 	@echo "  2. ...edit code..."
 	@echo "  3. make test"
 	@echo "  4. make bench REPORT_NAME=opt_v1"
-	@echo "  5. diff -u benchmarks/reports/baseline_st.txt benchmarks/reports/opt_v1_st.txt"	
-
+	@echo "  5. diff -u benchmarks/reports/baseline_st.txt benchmarks/reports/opt_v1_st.txt"
+	@echo ""
+	@echo "Repeated perf stat Comparison Example:"
+	@echo "  Input modes: all_nonzero measures the hot non-zero path; all_zero measures zero path; mixed alternates 0/non-zero to expose branch effects."
+	@echo "  1. make clean"
+	@echo "  2. make test CONFIG=release"
+	@echo "  3. make bench_stat CONFIG=release REPORT_NAME=baseline PERF_RUNS=7 KEEP_PERF=1"
+	@echo "  4. ...edit code..."
+	@echo "  5. make clean"
+	@echo "  6. make test CONFIG=release"
+	@echo "  7. make bench_stat CONFIG=release REPORT_NAME=opt_v1 PERF_RUNS=7 KEEP_PERF=1"
+	@echo "  8. diff -u benchmarks/reports/baseline_st_runtime.txt benchmarks/reports/opt_v1_runtime.txt"
+	@echo "  9. diff -u benchmarks/reports/baseline_st_stat.csv benchmarks/reports/opt_v1_st_stat.csv"
+	@echo " 10. diff -u benchmarks/reports/baseline_mt_stat.csv benchmarks/reports/opt_v1_mt_stat.csv"
+	@echo " 11. perf report -i benchmarks/reports/baseline_st.perf.data --stdio"
+	@echo " 12. perf report -i benchmarks/reports/opt_v1_st.perf.data --stdio"
+	@echo ""
+	@echo "Full three-mode study:"
+	@echo "  make bench_full CONFIG=release REPORT_NAME=baseline PERF_RUNS=7 KEEP_PERF=1"
+	@echo "  Reports are suffixed _all_zero, _all_nonzero and _mixed."
+	@echo "  Compare each mode separately; require identical data_fingerprint and checksum before timing comparisons."
 show-calc:
 	@echo "REPOSITORY_NAME = '$(REPOSITORY_NAME)'"
 	@echo "FAMILY_NAME = '$(FAMILY_NAME)'"
